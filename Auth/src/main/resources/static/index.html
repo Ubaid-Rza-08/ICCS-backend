@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spring Boot OAuth2 & JWT</title>
+    <style>
+        :root {
+            --primary: #4285F4;
+            --bg: #f0f2f5;
+            --text: #333;
+        }
+
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: var(--bg);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            color: var(--text);
+        }
+
+        .container {
+            width: 100%;
+            max-width: 420px;
+            padding: 20px;
+        }
+
+        .card {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        h1 { margin-bottom: 0.5rem; }
+        .subtext { color: #666; font-size: 0.9rem; margin-bottom: 2rem; }
+
+        /* Buttons */
+        .btn-google {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            background: white;
+            color: #5f6368;
+            border: 1px solid #dadce0;
+            padding: 12px;
+            border-radius: 4px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+
+        .btn-google:hover { background-color: #f8f9fa; border-color: #d2e3fc; }
+
+        .btn-primary, .btn-secondary, .btn-danger {
+            width: 100%;
+            padding: 10px;
+            margin-top: 10px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-secondary { background: #34a853; color: white; }
+        .btn-danger { background: #ea4335; color: white; margin-top: 20px; }
+
+        /* Dashboard Elements */
+        .avatar { width: 80px; height: 80px; border-radius: 50%; margin-bottom: 10px; }
+        .token-container { text-align: left; margin: 20px 0; font-size: 0.85rem; }
+        .code-box {
+            background: #eee;
+            padding: 8px;
+            border-radius: 4px;
+            font-family: monospace;
+            word-break: break-all;
+            max-height: 50px;
+            overflow-y: auto;
+            margin-bottom: 10px;
+            font-size: 0.75rem;
+        }
+        .status { font-size: 0.8rem; margin-top: 15px; min-height: 20px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <div id="login-section" class="card">
+        <h1>Welcome</h1>
+        <p>Secure Login with Google</p>
+        <p class="subtext">Spring Boot + Firebase + JWT</p>
+
+        <a href="http://localhost:8080/oauth2/authorization/google" class="btn-google">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" alt="G" width="20">
+            Sign in with Google
+        </a>
+    </div>
+
+    <div id="dashboard-section" class="card hidden">
+        <div class="profile-header">
+            <img id="user-avatar" src="" alt="Profile" class="avatar">
+            <h2 id="user-name">Loading...</h2>
+            <p id="user-email">...</p>
+        </div>
+
+        <div class="token-container">
+            <label>Access Token (Expires in 10m):</label>
+            <div id="access-token-display" class="code-box"></div>
+
+            <label>Refresh Token (Expires in 30d):</label>
+            <div id="refresh-token-display" class="code-box"></div>
+        </div>
+
+        <div class="actions">
+            <button onclick="fetchProtectedData()" class="btn-primary">Test API Call</button>
+            <button onclick="manualRefresh()" class="btn-secondary">Force Refresh Token</button>
+            <button onclick="logout()" class="btn-danger">Logout</button>
+        </div>
+
+        <p id="status-message" class="status"></p>
+    </div>
+
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

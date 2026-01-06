@@ -13,9 +13,11 @@ spring:
             redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
 
 firebase:
+  # It is often good practice to hide DB URLs if they contain secrets,
+  # though Firebase URLs are often public. Parameterizing it allows for easy switching.
   database-url: ${FIREBASE_DATABASE_URL}
-  credentials-path: ${FIREBASE_CREDENTIALS_PATH}
 
+# Cloudinary Configuration
 cloudinary:
   cloud-name: ${CLOUDINARY_CLOUD_NAME}
   api-key: ${CLOUDINARY_API_KEY}

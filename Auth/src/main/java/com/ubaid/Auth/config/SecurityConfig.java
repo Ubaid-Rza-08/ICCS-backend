@@ -33,6 +33,12 @@ public class SecurityConfig {
                         // 1. PUBLIC ENDPOINTS (Removed /api/analyze-product from here)
                         .requestMatchers("/", "/index.html", "/login/**", "/api/auth/**", "/api/user", "/api/users").permitAll()
 
+                        // --- NEW: SWAGGER WHITELIST ---
+                        .requestMatchers(
+                                "/v3/api-docs/**",
+                                "/swagger-ui/**",
+                                "/swagger-ui.html"
+                        ).permitAll()
                         // 2. ADMIN ONLY
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
 
@@ -56,7 +62,7 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(List.of("http://localhost:3000", "http://127.0.0.1:5500"));
+        configuration.setAllowedOrigins(List.of("http://localhost:5173","http://localhost:3000", "http://127.0.0.1:5500"));
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("Authorization", "Content-Type"));
         configuration.setAllowCredentials(true);

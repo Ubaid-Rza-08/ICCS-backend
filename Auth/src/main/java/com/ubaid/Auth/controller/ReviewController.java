@@ -1,11 +1,18 @@
 package com.ubaid.Auth.controller;
 
 import com.google.firebase.database.*;
-import com.google.gson.Gson; // Import Gson
-import com.ubaid.Auth.model.Review; // Ensure this imports your Review model
+import com.google.gson.Gson;
+import com.ubaid.Auth.dto.ReviewRequestDto; // Import the new DTO
+import com.ubaid.Auth.model.Review;
 import com.ubaid.Auth.model.UserEntity;
 import com.ubaid.Auth.service.CloudinaryService;
-import lombok.Data;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.ArraySchema;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -26,19 +33,27 @@ public class ReviewController {
 
     private final CloudinaryService cloudinaryService;
 
-    // --- 1. ADD REVIEW (Updated to accept JSON String + Files) ---
+    // --- 1. ADD REVIEW ---
     @PostMapping(value = "/add", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(summary = "Add a new review", description = "Submit a review with a JSON string and optional images", security = @SecurityRequirement(name = "bearerAuth"))
+    @ApiResponse(
+            responseCode = "200",
+            description = "Review added successfully",
+            content = @Content(mediaType = "application/json", schema = @Schema(implementation = Review.class))
+    )
     public ResponseEntity<?> addReview(
-            @RequestParam("review") String reviewJson, // <--- Accepts JSON String
+            @Parameter(description = "JSON string of ReviewRequestDto", schema = @Schema(type = "string", format = "json", example = "{\"productId\":\"ID\",\"rating\":5,\"message\":\"Text\"}"))
+            @RequestParam("review") String reviewJson,
+
+            @Parameter(description = "List of image files to upload")
             @RequestParam(value = "images", required = false) List<MultipartFile> files,
+
             Authentication authentication
     ) {
         try {
-            // 1. Parse JSON to DTO/Object
             Gson gson = new Gson();
             ReviewRequestDto requestDto = gson.fromJson(reviewJson, ReviewRequestDto.class);
 
-            // 2. Validate Input
             if (requestDto.getRating() < 0 || requestDto.getRating() > 5) {
                 return ResponseEntity.badRequest().body("Rating must be between 0 and 5");
             }
@@ -46,10 +61,8 @@ public class ReviewController {
                 return ResponseEntity.badRequest().body("Product ID is required");
             }
 
-            // 3. Get User Details from Token
             UserEntity currentUser = (UserEntity) authentication.getPrincipal();
 
-            // 4. Handle Image Uploads
             List<String> uploadedImageUrls = new ArrayList<>();
             if (files != null && !files.isEmpty()) {
                 for (MultipartFile file : files) {
@@ -60,19 +73,16 @@ public class ReviewController {
                 }
             }
 
-            // 5. Construct Review Object
             Review review = new Review();
             review.setProductId(requestDto.getProductId());
             review.setRating(requestDto.getRating());
             review.setMessage(requestDto.getMessage());
-
             review.setUserId(currentUser.getId());
             review.setUserName(currentUser.getUsername());
             review.setUserProfileImage(currentUser.getProfilePhotoUrl());
             review.setImageUrls(uploadedImageUrls);
             review.setTimestamp(System.currentTimeMillis());
 
-            // 6. Save to Firebase
             DatabaseReference ref = FirebaseDatabase.getInstance().getReference("reviews");
             String reviewId = ref.push().getKey();
             review.setId(reviewId);
@@ -88,8 +98,14 @@ public class ReviewController {
         }
     }
 
-    // --- 2. GET REVIEWS FOR PRODUCT (No Change) ---
+    // --- 2. GET REVIEWS FOR PRODUCT ---
     @GetMapping("/product/{productId}")
+    @Operation(summary = "Get reviews for a product", description = "Fetches all reviews for a specific product ID")
+    @ApiResponse(
+            responseCode = "200",
+            description = "List of reviews",
+            content = @Content(array = @ArraySchema(schema = @Schema(implementation = Review.class)))
+    )
     public CompletableFuture<ResponseEntity<?>> getProductReviews(@PathVariable String productId) {
         DatabaseReference ref = FirebaseDatabase.getInstance().getReference("reviews");
         CompletableFuture<ResponseEntity<?>> future = new CompletableFuture<>();
@@ -114,13 +130,5 @@ public class ReviewController {
             }
         });
         return future;
-    }
-
-    // --- DTO Class (Inner Class or Separate File) ---
-    @Data
-    static class ReviewRequestDto {
-        private String productId;
-        private int rating;
-        private String message;
     }
 }

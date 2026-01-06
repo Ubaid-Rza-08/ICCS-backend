@@ -1,89 +1,121 @@
 package com.ubaid.Auth.handler;
 
 import com.google.firebase.database.*;
+import com.ubaid.Auth.model.UserEntity;
 import com.ubaid.Auth.service.JwtService;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 @Component
+@RequiredArgsConstructor
+@Slf4j
 public class LoginSuccessHandler implements AuthenticationSuccessHandler {
 
-    @Autowired
-    private JwtService jwtService;
+    private final JwtService jwtService;
 
     @Override
     public void onAuthenticationSuccess(HttpServletRequest request, HttpServletResponse response, Authentication authentication) throws IOException, ServletException {
-        OAuth2User oauthUser = (OAuth2User) authentication.getPrincipal();
-
-        // 1. Extract Attributes from Google
-        String uid = oauthUser.getAttribute("sub");
-        String email = oauthUser.getAttribute("email");
-        String name = oauthUser.getAttribute("name");
-        String picture = oauthUser.getAttribute("picture");
-
-        // 2. Check Firebase for existing Role
-        String role = "CUSTOMER"; // Default
         try {
-            role = fetchUserRoleFromFirebase(uid);
+            OAuth2User oAuth2User = (OAuth2User) authentication.getPrincipal();
+            String email = oAuth2User.getAttribute("email");
+            String name = oAuth2User.getAttribute("name");
+            String photoUrl = oAuth2User.getAttribute("picture");
+
+            // 1. Get User (Robust method)
+            UserEntity user = getOrCreateUser(email, name, photoUrl);
+
+            // Safety Check
+            if (user.getId() == null) {
+                log.error("User ID is NULL for email: " + email);
+                response.sendRedirect("http://localhost:5173?error=UserError");
+                return;
+            }
+
+            // 2. Generate Tokens
+            String accessToken = jwtService.generateAccessToken(user.getId(), user.getEmail(), user.getRole(), user.getUsername(), user.getProfilePhotoUrl());
+            String refreshToken = UUID.randomUUID().toString();
+
+            // 3. Save Refresh Token
+            saveRefreshToken(user.getId(), refreshToken);
+
+            // 4. Redirect
+            String targetUrl = "http://localhost:5173/auth/callback" +
+                    "?accessToken=" + accessToken +
+                    "&refreshToken=" + refreshToken +
+                    "&uid=" + user.getId() +
+                    "&role=" + (user.getRole() != null ? user.getRole() : "CUSTOMER");
+
+            response.sendRedirect(targetUrl);
+
         } catch (Exception e) {
-            System.out.println("New user or error fetching role, defaulting to CUSTOMER");
+            log.error("Login Success Handler Error", e);
+            response.sendRedirect("http://localhost:5173?error=LoginFailed");
         }
-
-        // 3. Generate Token WITH Role AND User Details (Updated Signature)
-        // ensure you pass arguments in the order defined in JwtService: (uid, email, role, name, photoUrl)
-        String accessToken = jwtService.generateAccessToken(uid, email, role, name, picture);
-        String refreshToken = jwtService.generateRefreshToken();
-
-        // 4. Save/Update User in Firebase
-        saveUserToFirebase(uid, name, email, picture, role, refreshToken);
-
-        // 5. Redirect to Frontend
-        response.sendRedirect("http://localhost:3000/auth/callback?accessToken=" + accessToken +
-                "&refreshToken=" + refreshToken +
-                "&uid=" + uid +
-                "&role=" + role);
     }
 
-    // Helper: Fetch Role synchronously
-    private String fetchUserRoleFromFirebase(String uid) throws Exception {
-        DatabaseReference ref = FirebaseDatabase.getInstance().getReference("users").child(uid);
-        CompletableFuture<String> future = new CompletableFuture<>();
+    private UserEntity getOrCreateUser(String email, String name, String photoUrl) throws Exception {
+        DatabaseReference usersRef = FirebaseDatabase.getInstance().getReference("users");
+        CompletableFuture<UserEntity> future = new CompletableFuture<>();
 
-        ref.child("role").addListenerForSingleValueEvent(new ValueEventListener() {
+        Query query = usersRef.orderByChild("email").equalTo(email);
+
+        query.addListenerForSingleValueEvent(new ValueEventListener() {
             @Override
             public void onDataChange(DataSnapshot snapshot) {
                 if (snapshot.exists()) {
-                    future.complete(snapshot.getValue(String.class));
+                    for (DataSnapshot child : snapshot.getChildren()) {
+                        // FIX: Get UID from the Key directly (Guaranteed to exist)
+                        String uid = child.getKey();
+
+                        // Try to map object
+                        UserEntity existingUser = child.getValue(UserEntity.class);
+
+                        // Fallback if mapping failed due to field mismatch
+                        if (existingUser == null) existingUser = new UserEntity();
+                        if (existingUser.getId() == null) existingUser.setId(uid);
+                        if (existingUser.getEmail() == null) existingUser.setEmail(email);
+                        if (existingUser.getUsername() == null) existingUser.setUsername(name);
+                        if (existingUser.getProfilePhotoUrl() == null) existingUser.setProfilePhotoUrl(photoUrl);
+                        if (existingUser.getRole() == null) existingUser.setRole("CUSTOMER");
+
+                        future.complete(existingUser);
+                        return;
+                    }
                 } else {
-                    future.complete("CUSTOMER"); // Not found = New User
+                    // Create New User
+                    String newUid = UUID.randomUUID().toString();
+                    UserEntity newUser = new UserEntity(newUid, email, name, photoUrl, "CUSTOMER");
+                    usersRef.child(newUid).setValueAsync(newUser);
+                    future.complete(newUser);
                 }
             }
+
             @Override
-            public void onCancelled(DatabaseError error) { future.complete("CUSTOMER"); }
+            public void onCancelled(DatabaseError error) {
+                future.completeExceptionally(new RuntimeException(error.getMessage()));
+            }
         });
-        return future.get(); // Blocks until data returns
+
+        return future.get();
     }
 
-    private void saveUserToFirebase(String uid, String name, String email, String picture, String role, String refreshToken) {
-        DatabaseReference ref = FirebaseDatabase.getInstance().getReference("users");
-        Map<String, Object> updates = new HashMap<>();
-        updates.put("name", name);
-        updates.put("email", email);
-        updates.put("profilePhotoUrl", picture); // Changed key to match UserEntity ("profilePhotoUrl")
-        updates.put("refreshToken", refreshToken);
-        updates.put("role", role);
-
-        ref.child(uid).updateChildrenAsync(updates);
+    private void saveRefreshToken(String uid, String refreshToken) {
+        if (uid == null) {
+            log.error("Cannot save refresh token: UID is null");
+            return;
+        }
+        DatabaseReference ref = FirebaseDatabase.getInstance().getReference("users").child(uid);
+        ref.child("refreshToken").setValueAsync(refreshToken);
     }
 }

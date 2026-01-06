@@ -2,8 +2,15 @@ package com.ubaid.Auth.controller;
 
 import com.google.firebase.database.*;
 import com.google.gson.Gson;
+import com.ubaid.Auth.dto.PublicProductResponseDto;
 import com.ubaid.Auth.model.Product;
 import com.ubaid.Auth.service.CloudinaryService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.ArraySchema;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -31,6 +38,12 @@ public class SellerController {
     // --- CREATE PRODUCT ---
     @PreAuthorize("hasRole('SELLER')")
     @PostMapping(value = "/create-product", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(summary = "Create a new product", description = "Allows a seller to create a product with images", security = @SecurityRequirement(name = "bearerAuth"))
+    @ApiResponse(
+            responseCode = "200",
+            description = "Product created successfully",
+            content = @Content(mediaType = "application/json", schema = @Schema(implementation = Map.class))
+    )
     public ResponseEntity<?> createProduct(
             @RequestParam("product") String productJson,
             @RequestParam(value = "images", required = false) List<MultipartFile> files
@@ -57,13 +70,16 @@ public class SellerController {
             }
             product.setpImages(uploadedImageUrls);
 
+            if (product.getKeywords() == null) product.setKeywords(new ArrayList<>());
+
+            String customId = generateProductId(product.getpName(), product.getpBrandName());
+            product.setpId(customId);
+
             DatabaseReference ref = FirebaseDatabase.getInstance().getReference("products");
-            String uniqueId = ref.push().getKey();
-            product.setpId(uniqueId);
-            ref.child(uniqueId).setValueAsync(product);
+            ref.child(customId).setValueAsync(product);
 
             response.put("message", "Product created successfully");
-            response.put("productId", uniqueId);
+            response.put("productId", customId);
             return ResponseEntity.ok(response);
 
         } catch (Exception e) {
@@ -72,9 +88,18 @@ public class SellerController {
         }
     }
 
-    // --- GET ALL PRODUCTS (For Current Seller) ---
+    // --- GET ALL PRODUCTS ---
     @PreAuthorize("hasRole('SELLER')")
     @GetMapping("/all")
+    @Operation(summary = "Get all seller products", description = "Retrieves all products belonging to the logged-in seller", security = @SecurityRequirement(name = "bearerAuth"))
+    @ApiResponse(
+            responseCode = "200",
+            description = "List of products",
+            content = @Content(
+                    mediaType = "application/json",
+                    array = @ArraySchema(schema = @Schema(implementation = Product.class))
+            )
+    )
     public CompletableFuture<ResponseEntity<?>> getAllProducts() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         String currentSellerEmail = auth.getName();
@@ -82,7 +107,6 @@ public class SellerController {
         DatabaseReference ref = FirebaseDatabase.getInstance().getReference("products");
         CompletableFuture<ResponseEntity<?>> future = new CompletableFuture<>();
 
-        // Query products where 'sellerEmail' matches the logged-in user
         Query query = ref.orderByChild("sellerEmail").equalTo(currentSellerEmail);
 
         query.addListenerForSingleValueEvent(new ValueEventListener() {
@@ -97,45 +121,37 @@ public class SellerController {
                 }
                 future.complete(ResponseEntity.ok(productList));
             }
-
             @Override
             public void onCancelled(DatabaseError error) {
                 future.complete(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                         .body(Map.of("error", error.getMessage())));
             }
         });
-
         return future;
     }
 
     // --- DELETE PRODUCT ---
     @PreAuthorize("hasRole('SELLER')")
     @DeleteMapping("/delete/{pId}")
+    @Operation(summary = "Delete a product", description = "Deletes a specific product by ID (Owner only)", security = @SecurityRequirement(name = "bearerAuth"))
+    @ApiResponse(responseCode = "200", description = "Product deleted successfully")
+    @ApiResponse(responseCode = "403", description = "Forbidden: You do not own this product")
     public ResponseEntity<?> deleteProduct(@PathVariable String pId) {
         try {
-            // 1. Fetch existing product synchronously to verify owner and get images
             Product existingProduct = getProductSync(pId);
+            if (existingProduct == null) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", "Product not found"));
 
-            if (existingProduct == null) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", "Product not found"));
-            }
-
-            // 2. Verify Ownership
             Authentication auth = SecurityContextHolder.getContext().getAuthentication();
             if (!existingProduct.getSellerEmail().equals(auth.getName())) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "You do not own this product"));
             }
 
-            // 3. Delete images from Cloudinary
             if (existingProduct.getpImages() != null && !existingProduct.getpImages().isEmpty()) {
-                // Convert List to Array for your varargs method
                 String[] imagesToDelete = existingProduct.getpImages().toArray(new String[0]);
                 cloudinaryService.deleteImages(imagesToDelete);
             }
 
-            // 4. Delete from Firebase
             FirebaseDatabase.getInstance().getReference("products").child(pId).removeValueAsync();
-
             return ResponseEntity.ok(Map.of("message", "Product deleted successfully", "deletedId", pId));
 
         } catch (Exception e) {
@@ -146,44 +162,40 @@ public class SellerController {
     // --- UPDATE PRODUCT ---
     @PreAuthorize("hasRole('SELLER')")
     @PutMapping(value = "/update/{pId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(summary = "Update a product", description = "Updates an existing product (Owner only)", security = @SecurityRequirement(name = "bearerAuth"))
+    @ApiResponse(
+            responseCode = "200",
+            description = "Product updated successfully",
+            content = @Content(mediaType = "application/json", schema = @Schema(implementation = Product.class))
+    )
     public ResponseEntity<?> updateProduct(
             @PathVariable String pId,
             @RequestParam("product") String productJson,
             @RequestParam(value = "images", required = false) List<MultipartFile> files
     ) {
         try {
-            // 1. Fetch Existing Product
             Product existingProduct = getProductSync(pId);
-            if (existingProduct == null) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", "Product not found"));
-            }
+            if (existingProduct == null) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", "Product not found"));
 
-            // 2. Verify Ownership
             Authentication auth = SecurityContextHolder.getContext().getAuthentication();
             if (!existingProduct.getSellerEmail().equals(auth.getName())) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "You do not own this product"));
             }
 
-            // 3. Parse Update Data
             Gson gson = new Gson();
             Product updateData = gson.fromJson(productJson, Product.class);
 
-            // 4. Handle Image Logic
-            // Start with images the user sent in JSON (images they want to KEEP)
             List<String> finalImages = updateData.getpImages() != null ? updateData.getpImages() : new ArrayList<>();
             List<String> oldImages = existingProduct.getpImages() != null ? existingProduct.getpImages() : new ArrayList<>();
 
-            // Detect removed images (In DB but NOT in new JSON list) -> Delete them from Cloudinary
             List<String> imagesToDelete = oldImages.stream()
                     .filter(img -> !finalImages.contains(img))
                     .collect(Collectors.toList());
 
             if (!imagesToDelete.isEmpty()) {
                 cloudinaryService.deleteImages(imagesToDelete.toArray(new String[0]));
-                log.info("Deleted {} removed images", imagesToDelete.size());
             }
 
-            // 5. Upload New Images (if any)
             if (files != null && !files.isEmpty()) {
                 for (MultipartFile file : files) {
                     if (!file.isEmpty()) {
@@ -193,12 +205,11 @@ public class SellerController {
                 }
             }
             updateData.setpImages(finalImages);
-
-            // 6. Preserve Immutable Fields
             updateData.setpId(pId);
-            updateData.setSellerEmail(existingProduct.getSellerEmail()); // Ensure ownership doesn't change
+            updateData.setSellerEmail(existingProduct.getSellerEmail());
 
-            // 7. Save Update to Firebase
+            if (updateData.getKeywords() == null) updateData.setKeywords(new ArrayList<>());
+
             FirebaseDatabase.getInstance().getReference("products").child(pId).setValueAsync(updateData);
 
             Map<String, Object> response = new HashMap<>();
@@ -212,7 +223,138 @@ public class SellerController {
         }
     }
 
-    // --- HELPER: Synchronous Firebase Read ---
+    // --- SEARCH BY DESCRIPTION ---
+    @GetMapping("/search-description")
+    @Operation(summary = "Search products by description")
+    @ApiResponse(
+            responseCode = "200",
+            description = "Successful operation",
+            content = @Content(
+                    mediaType = "application/json",
+                    array = @ArraySchema(schema = @Schema(implementation = PublicProductResponseDto.class))
+            )
+    )
+    public CompletableFuture<ResponseEntity<?>> searchProductsByDescription(@RequestParam("query") String query) {
+        DatabaseReference ref = FirebaseDatabase.getInstance().getReference("products");
+        CompletableFuture<ResponseEntity<?>> future = new CompletableFuture<>();
+
+        String normalizedQuery = query.toLowerCase().trim();
+
+        ref.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                List<PublicProductResponseDto> matchingProducts = new ArrayList<>();
+
+                for (DataSnapshot data : snapshot.getChildren()) {
+                    Product product = data.getValue(Product.class);
+
+                    if (product != null &&
+                            product.getpDescription() != null &&
+                            product.getpDescription().toLowerCase().contains(normalizedQuery)) {
+
+                        matchingProducts.add(mapToDto(product));
+                    }
+                }
+                future.complete(ResponseEntity.ok(matchingProducts));
+            }
+
+            @Override
+            public void onCancelled(DatabaseError error) {
+                future.complete(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(Map.of("error", error.getMessage())));
+            }
+        });
+
+        return future;
+    }
+    @GetMapping("/search-keywords")
+    public CompletableFuture<ResponseEntity<?>> searchProductsByKeywords(@RequestParam("keywords") List<String> searchKeywords) {
+        DatabaseReference ref = FirebaseDatabase.getInstance().getReference("products");
+        CompletableFuture<ResponseEntity<?>> future = new CompletableFuture<>();
+
+        List<String> normalizedKeywords = searchKeywords.stream()
+                .map(String::toLowerCase)
+                .map(String::trim)
+                .collect(Collectors.toList());
+
+        ref.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                List<PublicProductResponseDto> matchingProducts = new ArrayList<>();
+
+                for (DataSnapshot data : snapshot.getChildren()) {
+                    Product product = data.getValue(Product.class);
+                    if (product != null && product.getKeywords() != null) {
+
+                        // Check for match
+                        boolean matchFound = product.getKeywords().stream()
+                                .map(String::toLowerCase)
+                                .anyMatch(prodKeyword -> normalizedKeywords.stream()
+                                        .anyMatch(prodKeyword::contains));
+
+                        if (matchFound) {
+                            // MAP TO DTO (Excluding ID, Seller, and Prices)
+                            PublicProductResponseDto dto = PublicProductResponseDto.builder()
+                                    .pName(product.getpName())
+                                    .pDescription(product.getpDescription())
+                                    .pBrandName(product.getpBrandName())
+                                    .pCreditScore(product.getpCreditScore())
+                                    .pImages(product.getpImages())
+                                    .category(product.getCategory())
+                                    .subCategory(product.getSubCategory())
+                                    .keywords(product.getKeywords())
+                                    .confidence(product.getConfidence())
+                                    .mode(product.getMode())
+                                    .build();
+
+                            matchingProducts.add(dto);
+                        }
+                    }
+                }
+                future.complete(ResponseEntity.ok(matchingProducts));
+            }
+
+            @Override
+            public void onCancelled(DatabaseError error) {
+                future.complete(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(Map.of("error", "Search error: " + error.getMessage())));
+            }
+        });
+
+        return future;
+    }
+
+    // --- HELPER METHODS ---
+
+    private PublicProductResponseDto mapToDto(Product product) {
+        return PublicProductResponseDto.builder()
+                .pName(product.getpName())
+                .pDescription(product.getpDescription())
+                .pBrandName(product.getpBrandName())
+                .pCreditScore(product.getpCreditScore())
+                .pImages(product.getpImages())
+                .category(product.getCategory())
+                .subCategory(product.getSubCategory())
+                .keywords(product.getKeywords())
+                .confidence(product.getConfidence())
+                .mode(product.getMode())
+                .build();
+    }
+
+    private String generateProductId(String name, String brand) {
+        String namePart = (name != null ? name : "XXXX").replaceAll("\\s+", "").toUpperCase();
+        if (namePart.length() > 4) namePart = namePart.substring(0, 4);
+        else while (namePart.length() < 4) namePart += "X";
+
+        String brandPart = (brand != null ? brand : "XXXX").replaceAll("\\s+", "").toUpperCase();
+        if (brandPart.length() > 4) brandPart = brandPart.substring(0, 4);
+        else while (brandPart.length() < 4) brandPart += "X";
+
+        int randomNum = new Random().nextInt(900) + 100;
+
+        return namePart + brandPart + randomNum;
+    }
+
     private Product getProductSync(String pId) throws ExecutionException, InterruptedException {
         DatabaseReference ref = FirebaseDatabase.getInstance().getReference("products").child(pId);
         CompletableFuture<Product> future = new CompletableFuture<>();
@@ -221,14 +363,13 @@ public class SellerController {
             @Override
             public void onDataChange(DataSnapshot snapshot) {
                 Product product = snapshot.getValue(Product.class);
-                future.complete(product); // Returns null if not found
+                future.complete(product);
             }
             @Override
             public void onCancelled(DatabaseError error) {
                 future.completeExceptionally(new RuntimeException(error.getMessage()));
             }
         });
-
-        return future.get(); // Blocks until data is retrieved
+        return future.get();
     }
 }

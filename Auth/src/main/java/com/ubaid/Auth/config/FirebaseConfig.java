@@ -16,13 +16,10 @@ public class FirebaseConfig {
     @Value("${firebase.database-url}")
     private String databaseUrl;
 
-    @Value("${firebase.credentials-path}")
-    private String credentialsPath;
-
     @Bean
     public FirebaseApp firebaseApp() throws IOException {
         // NEW (Correct)
-        ClassPathResource serviceAccount = new ClassPathResource(credentialsPath);
+        ClassPathResource serviceAccount = new ClassPathResource("");
 
         FirebaseOptions options = FirebaseOptions.builder()
                 .setCredentials(GoogleCredentials.fromStream(serviceAccount.getInputStream()))

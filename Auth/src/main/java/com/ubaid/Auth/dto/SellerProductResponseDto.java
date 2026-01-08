@@ -11,21 +11,27 @@ import java.util.List;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
-public class PublicProductResponseDto {
+public class SellerProductResponseDto {
 
-    // Basic Details
     private String pId;
     private String pName;
     private String pDescription;
     private String pBrandName;
+
+    private int pMrp;
+    private int pSellingPrice;
+    private int pPurchasingPrice;
+
+    private int pCreditScore;
+    private String sellerEmail;
+
     private List<String> pImages;
 
-    // Pricing (Added based on your request)
-    private double pSellingPrice; // Corresponds to sellerPrice
-    private double pMrp;          // Corresponds to Mrp
-
-    // Categorization & SEO
     private String category;
     private String subCategory;
     private List<String> keywords;
+
+    private double confidence;
+    private String mode;
 }
+

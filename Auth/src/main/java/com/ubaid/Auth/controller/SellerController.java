@@ -2,11 +2,10 @@ package com.ubaid.Auth.controller;
 
 import com.google.firebase.database.*;
 import com.google.gson.Gson;
-import com.ubaid.Auth.dto.PublicProductResponseDto;
+import com.ubaid.Auth.dto.SellerProductResponseDto;
 import com.ubaid.Auth.model.Product;
 import com.ubaid.Auth.service.CloudinaryService;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.media.ArraySchema;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -25,7 +24,6 @@ import org.springframework.web.multipart.MultipartFile;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/seller")
@@ -50,36 +48,52 @@ public class SellerController {
     ) {
         Map<String, Object> response = new HashMap<>();
         try {
+            // 1. Parse JSON
             Gson gson = new Gson();
             Product product = gson.fromJson(productJson, Product.class);
 
+            // 2. Set Seller Email
             Authentication auth = SecurityContextHolder.getContext().getAuthentication();
             String currentSellerEmail = auth.getName();
             product.setSellerEmail(currentSellerEmail);
 
-            List<String> uploadedImageUrls = new ArrayList<>();
+            // 3. IMAGE HANDLING (MERGE JSON URLS + NEW FILES)
+            List<String> finalImages = new ArrayList<>();
+
+            // A. Add existing images from JSON (if any)
+            if (product.getpImages() != null) {
+                finalImages.addAll(product.getpImages());
+            }
+
+            // B. Upload new files and add them
             if (files != null && !files.isEmpty()) {
                 for (MultipartFile file : files) {
                     if (file.isEmpty()) continue;
+                    // Check size limit (5MB)
                     if (!cloudinaryService.isValidFileSize(file, 5.0)) {
-                        return ResponseEntity.badRequest().body(Map.of("error", "File exceeds 5MB limit"));
+                        return ResponseEntity.badRequest().body(Map.of("error", "File " + file.getOriginalFilename() + " exceeds 5MB limit"));
                     }
                     String url = cloudinaryService.uploadProductImage(file);
-                    uploadedImageUrls.add(url);
+                    finalImages.add(url);
                 }
             }
-            product.setpImages(uploadedImageUrls);
+            product.setpImages(finalImages);
 
+            // 4. Handle other defaults
             if (product.getKeywords() == null) product.setKeywords(new ArrayList<>());
 
+            // 5. Generate ID
             String customId = generateProductId(product.getpName(), product.getpBrandName());
             product.setpId(customId);
 
+            // 6. Save to Firebase
             DatabaseReference ref = FirebaseDatabase.getInstance().getReference("products");
             ref.child(customId).setValueAsync(product);
 
             response.put("message", "Product created successfully");
             response.put("productId", customId);
+            response.put("imageCount", finalImages.size());
+
             return ResponseEntity.ok(response);
 
         } catch (Exception e) {
@@ -88,46 +102,40 @@ public class SellerController {
         }
     }
 
-    // --- GET ALL PRODUCTS ---
-    @PreAuthorize("hasRole('SELLER')")
+    // --- GET ALL PRODUCTS (SELLER SPECIFIC) ---
     @GetMapping("/all")
-    @Operation(summary = "Get all seller products", description = "Retrieves all products belonging to the logged-in seller", security = @SecurityRequirement(name = "bearerAuth"))
-    @ApiResponse(
-            responseCode = "200",
-            description = "List of products",
-            content = @Content(
-                    mediaType = "application/json",
-                    array = @ArraySchema(schema = @Schema(implementation = Product.class))
-            )
-    )
-    public CompletableFuture<ResponseEntity<?>> getAllProducts() {
+    @PreAuthorize("hasRole('SELLER')")
+    public ResponseEntity<List<SellerProductResponseDto>> getAllProducts() throws Exception {
+
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        String currentSellerEmail = auth.getName();
+        String sellerEmail = auth.getName();
 
         DatabaseReference ref = FirebaseDatabase.getInstance().getReference("products");
-        CompletableFuture<ResponseEntity<?>> future = new CompletableFuture<>();
+        CompletableFuture<List<SellerProductResponseDto>> future = new CompletableFuture<>();
 
-        Query query = ref.orderByChild("sellerEmail").equalTo(currentSellerEmail);
-
-        query.addListenerForSingleValueEvent(new ValueEventListener() {
-            @Override
-            public void onDataChange(DataSnapshot snapshot) {
-                List<Product> productList = new ArrayList<>();
-                for (DataSnapshot data : snapshot.getChildren()) {
-                    Product product = data.getValue(Product.class);
-                    if (product != null) {
-                        productList.add(product);
+        ref.orderByChild("sellerEmail").equalTo(sellerEmail)
+                .addListenerForSingleValueEvent(new ValueEventListener() {
+                    @Override
+                    public void onDataChange(DataSnapshot snapshot) {
+                        List<SellerProductResponseDto> list = new ArrayList<>();
+                        for (DataSnapshot data : snapshot.getChildren()) {
+                            Product p = data.getValue(Product.class);
+                            if (p != null) {
+                                list.add(mapToSellerDto(p));
+                            }
+                        }
+                        future.complete(list);
                     }
-                }
-                future.complete(ResponseEntity.ok(productList));
-            }
-            @Override
-            public void onCancelled(DatabaseError error) {
-                future.complete(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                        .body(Map.of("error", error.getMessage())));
-            }
-        });
-        return future;
+
+                    @Override
+                    public void onCancelled(DatabaseError error) {
+                        future.completeExceptionally(
+                                new RuntimeException(error.getMessage())
+                        );
+                    }
+                });
+
+        return ResponseEntity.ok(future.get());
     }
 
     // --- DELETE PRODUCT ---
@@ -146,6 +154,7 @@ public class SellerController {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "You do not own this product"));
             }
 
+            // Delete images from Cloudinary
             if (existingProduct.getpImages() != null && !existingProduct.getpImages().isEmpty()) {
                 String[] imagesToDelete = existingProduct.getpImages().toArray(new String[0]);
                 cloudinaryService.deleteImages(imagesToDelete);
@@ -162,11 +171,16 @@ public class SellerController {
     // --- UPDATE PRODUCT ---
     @PreAuthorize("hasRole('SELLER')")
     @PutMapping(value = "/update/{pId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @Operation(summary = "Update a product", description = "Updates an existing product (Owner only)", security = @SecurityRequirement(name = "bearerAuth"))
+    @Operation(
+            summary = "Update a product",
+            description = "Updates an existing product (Seller self-view only)",
+            security = @SecurityRequirement(name = "bearerAuth")
+    )
     @ApiResponse(
             responseCode = "200",
             description = "Product updated successfully",
-            content = @Content(mediaType = "application/json", schema = @Schema(implementation = Product.class))
+            content = @Content(mediaType = "application/json",
+                    schema = @Schema(implementation = SellerProductResponseDto.class))
     )
     public ResponseEntity<?> updateProduct(
             @PathVariable String pId,
@@ -174,170 +188,108 @@ public class SellerController {
             @RequestParam(value = "images", required = false) List<MultipartFile> files
     ) {
         try {
+            // 1. Fetch existing product
             Product existingProduct = getProductSync(pId);
-            if (existingProduct == null) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", "Product not found"));
-
-            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-            if (!existingProduct.getSellerEmail().equals(auth.getName())) {
-                return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "You do not own this product"));
+            if (existingProduct == null) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(Map.of("error", "Product not found"));
             }
 
+            // 2. Ownership check
+            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+            if (!existingProduct.getSellerEmail().equals(auth.getName())) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body(Map.of("error", "You do not own this product"));
+            }
+
+            // 3. Parse incoming JSON
             Gson gson = new Gson();
             Product updateData = gson.fromJson(productJson, Product.class);
 
-            List<String> finalImages = updateData.getpImages() != null ? updateData.getpImages() : new ArrayList<>();
-            List<String> oldImages = existingProduct.getpImages() != null ? existingProduct.getpImages() : new ArrayList<>();
+            // 4. IMAGE HANDLING logic
+            List<String> keptImages = updateData.getpImages() != null
+                    ? new ArrayList<>(updateData.getpImages())
+                    : new ArrayList<>();
 
+            List<String> oldImages = existingProduct.getpImages() != null
+                    ? existingProduct.getpImages()
+                    : new ArrayList<>();
+
+            // Determine deleted images (Present in old but missing in new list)
             List<String> imagesToDelete = oldImages.stream()
-                    .filter(img -> !finalImages.contains(img))
-                    .collect(Collectors.toList());
+                    .filter(img -> !keptImages.contains(img))
+                    .toList();
 
             if (!imagesToDelete.isEmpty()) {
                 cloudinaryService.deleteImages(imagesToDelete.toArray(new String[0]));
             }
 
+            // Upload new files
             if (files != null && !files.isEmpty()) {
                 for (MultipartFile file : files) {
                     if (!file.isEmpty()) {
                         String newUrl = cloudinaryService.uploadProductImage(file);
-                        finalImages.add(newUrl);
+                        keptImages.add(newUrl);
                     }
                 }
             }
-            updateData.setpImages(finalImages);
-            updateData.setpId(pId);
-            updateData.setSellerEmail(existingProduct.getSellerEmail());
 
-            if (updateData.getKeywords() == null) updateData.setKeywords(new ArrayList<>());
+            // 5. MERGE FIELDS
+            existingProduct.setpName(updateData.getpName());
+            existingProduct.setpDescription(updateData.getpDescription());
+            existingProduct.setpBrandName(updateData.getpBrandName());
+            existingProduct.setpMrp(updateData.getpMrp());
+            existingProduct.setpSellingPrice(updateData.getpSellingPrice());
+            existingProduct.setpPurchasingPrice(updateData.getpPurchasingPrice());
+            existingProduct.setpCreditScore(updateData.getpCreditScore());
+            existingProduct.setCategory(updateData.getCategory());
+            existingProduct.setSubCategory(updateData.getSubCategory());
+            existingProduct.setKeywords(
+                    updateData.getKeywords() != null ? updateData.getKeywords() : new ArrayList<>()
+            );
+            existingProduct.setConfidence(updateData.getConfidence());
+            existingProduct.setMode(updateData.getMode());
+            existingProduct.setpImages(keptImages); // Set updated list
 
-            FirebaseDatabase.getInstance().getReference("products").child(pId).setValueAsync(updateData);
+            // 6. Save merged product
+            FirebaseDatabase.getInstance()
+                    .getReference("products")
+                    .child(pId)
+                    .setValueAsync(existingProduct);
 
-            Map<String, Object> response = new HashMap<>();
-            response.put("message", "Product updated successfully");
-            response.put("product", updateData);
-            return ResponseEntity.ok(response);
+            return ResponseEntity.ok(
+                    Map.of(
+                            "message", "Product updated successfully",
+                            "product", mapToSellerDto(existingProduct)
+                    )
+            );
 
         } catch (Exception e) {
             log.error("Update failed", e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", e.getMessage()));
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", e.getMessage()));
         }
-    }
-
-    // --- SEARCH BY DESCRIPTION ---
-    @GetMapping("/search-description")
-    @Operation(summary = "Search products by description")
-    @ApiResponse(
-            responseCode = "200",
-            description = "Successful operation",
-            content = @Content(
-                    mediaType = "application/json",
-                    array = @ArraySchema(schema = @Schema(implementation = PublicProductResponseDto.class))
-            )
-    )
-    public CompletableFuture<ResponseEntity<?>> searchProductsByDescription(@RequestParam("query") String query) {
-        DatabaseReference ref = FirebaseDatabase.getInstance().getReference("products");
-        CompletableFuture<ResponseEntity<?>> future = new CompletableFuture<>();
-
-        String normalizedQuery = query.toLowerCase().trim();
-
-        ref.addListenerForSingleValueEvent(new ValueEventListener() {
-            @Override
-            public void onDataChange(DataSnapshot snapshot) {
-                List<PublicProductResponseDto> matchingProducts = new ArrayList<>();
-
-                for (DataSnapshot data : snapshot.getChildren()) {
-                    Product product = data.getValue(Product.class);
-
-                    if (product != null &&
-                            product.getpDescription() != null &&
-                            product.getpDescription().toLowerCase().contains(normalizedQuery)) {
-
-                        matchingProducts.add(mapToDto(product));
-                    }
-                }
-                future.complete(ResponseEntity.ok(matchingProducts));
-            }
-
-            @Override
-            public void onCancelled(DatabaseError error) {
-                future.complete(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                        .body(Map.of("error", error.getMessage())));
-            }
-        });
-
-        return future;
-    }
-    @GetMapping("/search-keywords")
-    public CompletableFuture<ResponseEntity<?>> searchProductsByKeywords(@RequestParam("keywords") List<String> searchKeywords) {
-        DatabaseReference ref = FirebaseDatabase.getInstance().getReference("products");
-        CompletableFuture<ResponseEntity<?>> future = new CompletableFuture<>();
-
-        List<String> normalizedKeywords = searchKeywords.stream()
-                .map(String::toLowerCase)
-                .map(String::trim)
-                .collect(Collectors.toList());
-
-        ref.addListenerForSingleValueEvent(new ValueEventListener() {
-            @Override
-            public void onDataChange(DataSnapshot snapshot) {
-                List<PublicProductResponseDto> matchingProducts = new ArrayList<>();
-
-                for (DataSnapshot data : snapshot.getChildren()) {
-                    Product product = data.getValue(Product.class);
-                    if (product != null && product.getKeywords() != null) {
-
-                        // Check for match
-                        boolean matchFound = product.getKeywords().stream()
-                                .map(String::toLowerCase)
-                                .anyMatch(prodKeyword -> normalizedKeywords.stream()
-                                        .anyMatch(prodKeyword::contains));
-
-                        if (matchFound) {
-                            // MAP TO DTO (Excluding ID, Seller, and Prices)
-                            PublicProductResponseDto dto = PublicProductResponseDto.builder()
-                                    .pName(product.getpName())
-                                    .pDescription(product.getpDescription())
-                                    .pBrandName(product.getpBrandName())
-                                    .pCreditScore(product.getpCreditScore())
-                                    .pImages(product.getpImages())
-                                    .category(product.getCategory())
-                                    .subCategory(product.getSubCategory())
-                                    .keywords(product.getKeywords())
-                                    .confidence(product.getConfidence())
-                                    .mode(product.getMode())
-                                    .build();
-
-                            matchingProducts.add(dto);
-                        }
-                    }
-                }
-                future.complete(ResponseEntity.ok(matchingProducts));
-            }
-
-            @Override
-            public void onCancelled(DatabaseError error) {
-                future.complete(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                        .body(Map.of("error", "Search error: " + error.getMessage())));
-            }
-        });
-
-        return future;
     }
 
     // --- HELPER METHODS ---
 
-    private PublicProductResponseDto mapToDto(Product product) {
-        return PublicProductResponseDto.builder()
-                .pName(product.getpName())
-                .pDescription(product.getpDescription())
-                .pBrandName(product.getpBrandName())
-                .pCreditScore(product.getpCreditScore())
-                .pImages(product.getpImages())
-                .category(product.getCategory())
-                .subCategory(product.getSubCategory())
-                .keywords(product.getKeywords())
-                .confidence(product.getConfidence())
-                .mode(product.getMode())
+    private SellerProductResponseDto mapToSellerDto(Product p) {
+        return SellerProductResponseDto.builder()
+                .pId(p.getpId())
+                .pName(p.getpName())
+                .pDescription(p.getpDescription())
+                .pBrandName(p.getpBrandName())
+                .pMrp(p.getpMrp())
+                .pSellingPrice(p.getpSellingPrice())
+                .pPurchasingPrice(p.getpPurchasingPrice())
+                .pCreditScore(p.getpCreditScore())
+                .sellerEmail(p.getSellerEmail())
+                .pImages(p.getpImages() != null ? p.getpImages() : new ArrayList<>())
+                .category(p.getCategory())
+                .subCategory(p.getSubCategory())
+                .keywords(p.getKeywords())
+                .confidence(p.getConfidence())
+                .mode(p.getMode())
                 .build();
     }
 

@@ -11,21 +11,32 @@ import java.util.List;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
-public class PublicProductResponseDto {
+public class ProductRequestDto {
 
-    // Basic Details
-    private String pId;
     private String pName;
     private String pDescription;
     private String pBrandName;
+
+    // Added field for handling existing images during updates
     private List<String> pImages;
 
-    // Pricing (Added based on your request)
-    private double pSellingPrice; // Corresponds to sellerPrice
-    private double pMrp;          // Corresponds to Mrp
+    // Prices changed to int as requested
+    private int pMrp;
+    private int pSellingPrice;
+    private int pPurchasingPrice;
 
-    // Categorization & SEO
+    private int pCreditScore;
+
+    private String sellerEmail;
+
     private String category;
     private String subCategory;
+
     private List<String> keywords;
+
+    @Builder.Default
+    private Double confidence = 0.99;
+
+    @Builder.Default
+    private String mode = "HIGH_CONFIDENCE";
 }

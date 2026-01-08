@@ -7,6 +7,8 @@ import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpEntity;
@@ -25,8 +27,9 @@ import java.util.Map;
 @RequestMapping("/api")
 public class ProductAnalysisController {
 
-    // Inject the base URL from application.yml
-    // Value will be: https://distinct-newark-stronger-separately.trycloudflare.com
+    // Initialize Logger
+    private static final Logger logger = LoggerFactory.getLogger(ProductAnalysisController.class);
+
     @Value("${ai.service.url}")
     private String aiServiceBaseUrl;
 
@@ -47,7 +50,11 @@ public class ProductAnalysisController {
             @Parameter(description = "Image file to analyze")
             @RequestParam("image") MultipartFile file
     ) {
+        // LOG: Entry point
+        logger.info("Request received to analyze product image: {}", (file != null ? file.getOriginalFilename() : "null"));
+
         if (file == null || file.isEmpty()) {
+            logger.warn("Analysis failed: Image file is missing or empty.");
             return ResponseEntity.badRequest().body(Map.of("error", "Image file is required"));
         }
 
@@ -57,7 +64,6 @@ public class ProductAnalysisController {
             headers.setContentType(MediaType.MULTIPART_FORM_DATA);
 
             // 2. Prepare Body
-            // We override getFilename() so the external API recognizes it as a file upload
             ByteArrayResource fileResource = new ByteArrayResource(file.getBytes()) {
                 @Override
                 public String getFilename() {
@@ -71,8 +77,8 @@ public class ProductAnalysisController {
             HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
 
             // 3. Construct the Full URL
-            // Appends the specific endpoint to the base URL
             String fullUrl = aiServiceBaseUrl + "/analyze-product";
+            logger.info("Forwarding request to AI Service at: {}", fullUrl);
 
             // 4. Call the External API
             ResponseEntity<ProductAnalysisResponse> response = restTemplate.postForEntity(
@@ -81,11 +87,15 @@ public class ProductAnalysisController {
                     ProductAnalysisResponse.class
             );
 
+            // LOG: Success
+            logger.info("AI Service analysis completed successfully for: {}", file.getOriginalFilename());
+
             // 5. Return the real data
             return ResponseEntity.ok(response.getBody());
 
         } catch (Exception e) {
-            e.printStackTrace();
+            // LOG: Error with stack trace
+            logger.error("Error occurred while analyzing product image: {}", file.getOriginalFilename(), e);
             return ResponseEntity.internalServerError().body(Map.of("error", "Failed to analyze product: " + e.getMessage()));
         }
     }

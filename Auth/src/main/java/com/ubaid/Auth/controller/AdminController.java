@@ -6,6 +6,7 @@ import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -15,6 +16,7 @@ import java.util.concurrent.CompletableFuture;
 
 @RestController
 @RequestMapping("/api/admin")
+@Slf4j
 public class AdminController {
 
     @PreAuthorize("hasRole('ADMIN')")
@@ -30,8 +32,12 @@ public class AdminController {
             @RequestBody Map<String, String> request) {
 
         String targetEmail = request.get("email");
+        log.info("Received request to promote user with email: {}", targetEmail);
 
-        if (targetEmail == null) return ResponseEntity.badRequest().body("Email required");
+        if (targetEmail == null) {
+            log.warn("Promotion failed: Email is missing in request body");
+            return ResponseEntity.badRequest().body("Email required");
+        }
 
         DatabaseReference usersRef = FirebaseDatabase.getInstance().getReference("users");
         Query query = usersRef.orderByChild("email").equalTo(targetEmail);
@@ -44,15 +50,18 @@ public class AdminController {
                 if (snapshot.exists()) {
                     for (DataSnapshot userSnapshot : snapshot.getChildren()) {
                         userSnapshot.getRef().child("role").setValueAsync("SELLER");
+                        log.info("Successfully promoted user {} to SELLER", targetEmail);
                         future.complete(ResponseEntity.ok("User " + targetEmail + " is now a SELLER."));
                         return;
                     }
                 } else {
+                    log.warn("Promotion failed: User with email {} not found", targetEmail);
                     future.complete(ResponseEntity.status(404).body("User not found"));
                 }
             }
             @Override
             public void onCancelled(DatabaseError error) {
+                log.error("Database error during promotion: {}", error.getMessage());
                 future.complete(ResponseEntity.internalServerError().body("DB Error"));
             }
         });

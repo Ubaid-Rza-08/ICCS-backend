@@ -5,7 +5,6 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-
 import java.util.List;
 
 @Data
@@ -24,10 +23,8 @@ public class ProductAnalysisResponse {
     public static class ProductData {
         private String title;
         private String category;
-
         @JsonProperty("sub_category")
         private String subCategory;
-
         private String brand;
         private List<String> keywords;
         private String description;

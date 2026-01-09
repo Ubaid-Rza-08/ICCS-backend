@@ -2,7 +2,7 @@ package com.ubaid.Auth.controller;
 
 import com.google.firebase.database.*;
 import com.google.gson.Gson;
-import com.ubaid.Auth.dto.ReviewRequestDto; // Import the new DTO
+import com.ubaid.Auth.dto.ReviewRequestDto;
 import com.ubaid.Auth.model.Review;
 import com.ubaid.Auth.model.UserEntity;
 import com.ubaid.Auth.service.CloudinaryService;
@@ -51,20 +51,24 @@ public class ReviewController {
             Authentication authentication
     ) {
         try {
+            UserEntity currentUser = (UserEntity) authentication.getPrincipal();
+            log.info("Received request to add review from user: {}", currentUser.getUsername());
+
             Gson gson = new Gson();
             ReviewRequestDto requestDto = gson.fromJson(reviewJson, ReviewRequestDto.class);
 
             if (requestDto.getRating() < 0 || requestDto.getRating() > 5) {
+                log.warn("Invalid rating provided: {}", requestDto.getRating());
                 return ResponseEntity.badRequest().body("Rating must be between 0 and 5");
             }
             if (requestDto.getProductId() == null || requestDto.getProductId().isEmpty()) {
+                log.warn("Missing product ID in review request");
                 return ResponseEntity.badRequest().body("Product ID is required");
             }
 
-            UserEntity currentUser = (UserEntity) authentication.getPrincipal();
-
             List<String> uploadedImageUrls = new ArrayList<>();
             if (files != null && !files.isEmpty()) {
+                log.debug("Uploading {} review images...", files.size());
                 for (MultipartFile file : files) {
                     if (!file.isEmpty()) {
                         String url = cloudinaryService.uploadImage(file, "reviews");
@@ -89,6 +93,7 @@ public class ReviewController {
 
             ref.child(reviewId).setValueAsync(review);
 
+            log.info("Review added successfully with ID: {} for Product: {}", reviewId, review.getProductId());
             return ResponseEntity.ok(Map.of("message", "Review added successfully", "review", review));
 
         } catch (Exception e) {
@@ -107,6 +112,7 @@ public class ReviewController {
             content = @Content(array = @ArraySchema(schema = @Schema(implementation = Review.class)))
     )
     public CompletableFuture<ResponseEntity<?>> getProductReviews(@PathVariable String productId) {
+        log.info("Fetching reviews for product ID: {}", productId);
         DatabaseReference ref = FirebaseDatabase.getInstance().getReference("reviews");
         CompletableFuture<ResponseEntity<?>> future = new CompletableFuture<>();
 
@@ -121,10 +127,12 @@ public class ReviewController {
                     if (review != null) reviewList.add(review);
                 }
                 reviewList.sort((r1, r2) -> Long.compare(r2.getTimestamp(), r1.getTimestamp()));
+                log.info("Retrieved {} reviews for product {}", reviewList.size(), productId);
                 future.complete(ResponseEntity.ok(reviewList));
             }
             @Override
             public void onCancelled(DatabaseError error) {
+                log.error("Database error fetching reviews: {}", error.getMessage());
                 future.complete(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                         .body("Error fetching reviews: " + error.getMessage()));
             }

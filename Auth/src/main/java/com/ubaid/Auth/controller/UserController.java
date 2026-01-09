@@ -7,6 +7,7 @@ import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -20,6 +21,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 
 @RestController
+@Slf4j
 public class UserController {
 
     @GetMapping("/api/user")
@@ -28,9 +30,12 @@ public class UserController {
             @Parameter(hidden = true) // Hide this from Swagger as it is injected automatically
             @AuthenticationPrincipal OAuth2User principal
     ) {
+        log.info("Request received to get current user info");
         if (principal == null) {
+            log.warn("getUser request failed: Principal is null (Not logged in)");
             return Collections.singletonMap("error", "Not logged in");
         }
+        log.debug("Returning details for user: {}", principal.getName());
         return principal.getAttributes();
     }
 
@@ -42,6 +47,7 @@ public class UserController {
             content = @Content(mediaType = "application/json", schema = @Schema(implementation = Map.class))
     )
     public List<Map<String, Object>> getAllUsers() throws ExecutionException, InterruptedException {
+        log.info("Request received to fetch all users");
         DatabaseReference ref = FirebaseDatabase.getInstance().getReference("users");
         CompletableFuture<List<Map<String, Object>>> future = new CompletableFuture<>();
 
@@ -53,10 +59,12 @@ public class UserController {
                     Map<String, Object> user = (Map<String, Object>) snapshot.getValue();
                     userList.add(user);
                 }
+                log.info("Successfully retrieved {} users", userList.size());
                 future.complete(userList);
             }
             @Override
             public void onCancelled(DatabaseError databaseError) {
+                log.error("Error fetching all users: {}", databaseError.getMessage());
                 future.completeExceptionally(databaseError.toException());
             }
         });

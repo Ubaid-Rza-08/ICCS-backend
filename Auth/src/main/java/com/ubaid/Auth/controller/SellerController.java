@@ -48,13 +48,15 @@ public class SellerController {
     ) {
         Map<String, Object> response = new HashMap<>();
         try {
+            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+            String currentSellerEmail = auth.getName();
+            log.info("Seller {} initiating product creation", currentSellerEmail);
+
             // 1. Parse JSON
             Gson gson = new Gson();
             Product product = gson.fromJson(productJson, Product.class);
 
             // 2. Set Seller Email
-            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-            String currentSellerEmail = auth.getName();
             product.setSellerEmail(currentSellerEmail);
 
             // 3. IMAGE HANDLING (MERGE JSON URLS + NEW FILES)
@@ -67,10 +69,12 @@ public class SellerController {
 
             // B. Upload new files and add them
             if (files != null && !files.isEmpty()) {
+                log.debug("Uploading {} new product images...", files.size());
                 for (MultipartFile file : files) {
                     if (file.isEmpty()) continue;
                     // Check size limit (5MB)
                     if (!cloudinaryService.isValidFileSize(file, 5.0)) {
+                        log.warn("File size exceeded for {}", file.getOriginalFilename());
                         return ResponseEntity.badRequest().body(Map.of("error", "File " + file.getOriginalFilename() + " exceeds 5MB limit"));
                     }
                     String url = cloudinaryService.uploadProductImage(file);
@@ -89,6 +93,8 @@ public class SellerController {
             // 6. Save to Firebase
             DatabaseReference ref = FirebaseDatabase.getInstance().getReference("products");
             ref.child(customId).setValueAsync(product);
+
+            log.info("Product created successfully with ID: {}", customId);
 
             response.put("message", "Product created successfully");
             response.put("productId", customId);
@@ -109,6 +115,7 @@ public class SellerController {
 
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         String sellerEmail = auth.getName();
+        log.info("Fetching all products for seller: {}", sellerEmail);
 
         DatabaseReference ref = FirebaseDatabase.getInstance().getReference("products");
         CompletableFuture<List<SellerProductResponseDto>> future = new CompletableFuture<>();
@@ -124,11 +131,13 @@ public class SellerController {
                                 list.add(mapToSellerDto(p));
                             }
                         }
+                        log.info("Retrieved {} products for seller {}", list.size(), sellerEmail);
                         future.complete(list);
                     }
 
                     @Override
                     public void onCancelled(DatabaseError error) {
+                        log.error("Error fetching seller products: {}", error.getMessage());
                         future.completeExceptionally(
                                 new RuntimeException(error.getMessage())
                         );
@@ -145,25 +154,35 @@ public class SellerController {
     @ApiResponse(responseCode = "200", description = "Product deleted successfully")
     @ApiResponse(responseCode = "403", description = "Forbidden: You do not own this product")
     public ResponseEntity<?> deleteProduct(@PathVariable String pId) {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        String sellerName = auth.getName();
+        log.info("Request from {} to delete product ID: {}", sellerName, pId);
+
         try {
             Product existingProduct = getProductSync(pId);
-            if (existingProduct == null) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", "Product not found"));
+            if (existingProduct == null) {
+                log.warn("Product deletion failed: Product ID {} not found", pId);
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", "Product not found"));
+            }
 
-            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-            if (!existingProduct.getSellerEmail().equals(auth.getName())) {
+            if (!existingProduct.getSellerEmail().equals(sellerName)) {
+                log.warn("Unauthorized deletion attempt by {} for product owned by {}", sellerName, existingProduct.getSellerEmail());
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "You do not own this product"));
             }
 
             // Delete images from Cloudinary
             if (existingProduct.getpImages() != null && !existingProduct.getpImages().isEmpty()) {
+                log.debug("Deleting images from Cloudinary for product {}", pId);
                 String[] imagesToDelete = existingProduct.getpImages().toArray(new String[0]);
                 cloudinaryService.deleteImages(imagesToDelete);
             }
 
             FirebaseDatabase.getInstance().getReference("products").child(pId).removeValueAsync();
+            log.info("Product ID {} deleted successfully", pId);
             return ResponseEntity.ok(Map.of("message", "Product deleted successfully", "deletedId", pId));
 
         } catch (Exception e) {
+            log.error("Error deleting product {}", pId, e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", e.getMessage()));
         }
     }
@@ -187,6 +206,10 @@ public class SellerController {
             @RequestParam("product") String productJson,
             @RequestParam(value = "images", required = false) List<MultipartFile> files
     ) {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        String sellerName = auth.getName();
+        log.info("Request from {} to update product ID: {}", sellerName, pId);
+
         try {
             // 1. Fetch existing product
             Product existingProduct = getProductSync(pId);
@@ -196,8 +219,8 @@ public class SellerController {
             }
 
             // 2. Ownership check
-            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-            if (!existingProduct.getSellerEmail().equals(auth.getName())) {
+            if (!existingProduct.getSellerEmail().equals(sellerName)) {
+                log.warn("Unauthorized update attempt by {} for product owned by {}", sellerName, existingProduct.getSellerEmail());
                 return ResponseEntity.status(HttpStatus.FORBIDDEN)
                         .body(Map.of("error", "You do not own this product"));
             }
@@ -221,11 +244,13 @@ public class SellerController {
                     .toList();
 
             if (!imagesToDelete.isEmpty()) {
+                log.debug("Removing {} deleted images from Cloudinary", imagesToDelete.size());
                 cloudinaryService.deleteImages(imagesToDelete.toArray(new String[0]));
             }
 
             // Upload new files
             if (files != null && !files.isEmpty()) {
+                log.debug("Uploading {} new images during update", files.size());
                 for (MultipartFile file : files) {
                     if (!file.isEmpty()) {
                         String newUrl = cloudinaryService.uploadProductImage(file);
@@ -257,6 +282,8 @@ public class SellerController {
                     .child(pId)
                     .setValueAsync(existingProduct);
 
+            log.info("Product ID {} updated successfully", pId);
+
             return ResponseEntity.ok(
                     Map.of(
                             "message", "Product updated successfully",
@@ -265,7 +292,7 @@ public class SellerController {
             );
 
         } catch (Exception e) {
-            log.error("Update failed", e);
+            log.error("Update failed for product {}", pId, e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", e.getMessage()));
         }

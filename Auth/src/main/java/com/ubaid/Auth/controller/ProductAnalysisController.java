@@ -1,102 +1,125 @@
 package com.ubaid.Auth.controller;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ubaid.Auth.dto.ProductAnalysisResponse;
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.media.Content;
-import io.swagger.v3.oas.annotations.media.Schema;
-import io.swagger.v3.oas.annotations.responses.ApiResponse;
-import io.swagger.v3.oas.annotations.security.SecurityRequirement;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.ByteArrayResource;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
+import com.ubaid.Auth.service.GeminiService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.Map;
 
 @RestController
 @RequestMapping("/api")
+@Slf4j
 public class ProductAnalysisController {
 
-    // Initialize Logger
-    private static final Logger logger = LoggerFactory.getLogger(ProductAnalysisController.class);
+    private final GeminiService geminiService;
+    private final ObjectMapper objectMapper;
 
-    @Value("${ai.service.url}")
-    private String aiServiceBaseUrl;
-
-    private final RestTemplate restTemplate;
-
-    public ProductAnalysisController() {
-        this.restTemplate = new RestTemplate();
+    public ProductAnalysisController(GeminiService geminiService, ObjectMapper objectMapper) {
+        this.geminiService = geminiService;
+        this.objectMapper = objectMapper;
     }
 
-    @PostMapping(value = "/analyze-product", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @Operation(summary = "Analyze product image", description = "Uploads an image to get AI-generated product details", security = @SecurityRequirement(name = "bearerAuth"))
-    @ApiResponse(
-            responseCode = "200",
-            description = "Analysis successful",
-            content = @Content(schema = @Schema(implementation = ProductAnalysisResponse.class))
-    )
-    public ResponseEntity<?> analyzeProduct(
-            @Parameter(description = "Image file to analyze")
-            @RequestParam("image") MultipartFile file
-    ) {
-        // LOG: Entry point
-        logger.info("Request received to analyze product image: {}", (file != null ? file.getOriginalFilename() : "null"));
+    private static final String PRODUCT_ANALYSIS_PROMPT = """
+            Analyze the product shown in the image strictly.
+            
+            You must return a raw JSON object only. Do not wrap it in markdown formatted code blocks (no ```json ... ```).
+            
+            Fields to extract:
+            - title: A short, descriptive title of the product.
+            - brand: The brand name if visible, else 'Generic'.
+            - category: The main category (e.g., Electronics, Fashion).
+            - sub_category: A more specific category.
+            - description: A short description (max 2 sentences).
+            - keywords: A list of 5 search keywords.
+            - confidence: A number between 0.0 and 1.0 indicating how clear the image is.
+            - mode: Always return "AI_DETECTED".
+            
+            JSON Structure:
+            {
+              "product_data": {
+                "title": "string",
+                "brand": "string",
+                "category": "string",
+                "sub_category": "string",
+                "description": "string",
+                "keywords": ["string"],
+                "confidence": 0.95,
+                "mode": "AI_DETECTED"
+              }
+            }
+            """;
 
-        if (file == null || file.isEmpty()) {
-            logger.warn("Analysis failed: Image file is missing or empty.");
+    @PostMapping(
+            value = "/analyze-product",
+            consumes = MediaType.MULTIPART_FORM_DATA_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    public ResponseEntity<?> analyzeProduct(@RequestParam("image") MultipartFile image) {
+
+        log.info("Received request to analyze product image: {}",
+                image != null ? image.getOriginalFilename() : "null");
+
+        if (image == null || image.isEmpty()) {
+            log.warn("Analysis failed: Image file is missing or empty");
             return ResponseEntity.badRequest().body(Map.of("error", "Image file is required"));
         }
 
         try {
-            // 1. Prepare Headers
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-
-            // 2. Prepare Body
-            ByteArrayResource fileResource = new ByteArrayResource(file.getBytes()) {
-                @Override
-                public String getFilename() {
-                    return file.getOriginalFilename();
-                }
-            };
-
-            MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
-            body.add("file", fileResource);
-
-            HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
-
-            // 3. Construct the Full URL
-            String fullUrl = aiServiceBaseUrl + "/analyze-product";
-            logger.info("Forwarding request to AI Service at: {}", fullUrl);
-
-            // 4. Call the External API
-            ResponseEntity<ProductAnalysisResponse> response = restTemplate.postForEntity(
-                    fullUrl,
-                    requestEntity,
-                    ProductAnalysisResponse.class
+            log.debug("Sending image to Gemini Service for analysis...");
+            // 1. Pass bytes and content type (e.g., image/png) to service
+            String rawResponse = geminiService.analyzeImage(
+                    PRODUCT_ANALYSIS_PROMPT,
+                    image.getBytes(),
+                    image.getContentType()
             );
 
-            // LOG: Success
-            logger.info("AI Service analysis completed successfully for: {}", file.getOriginalFilename());
+            log.debug("Raw AI Response received");
 
-            // 5. Return the real data
-            return ResponseEntity.ok(response.getBody());
+            // 2. Extract AI text
+            JsonNode root = objectMapper.readTree(rawResponse);
+            JsonNode candidates = root.path("candidates");
+
+            if (candidates.isEmpty()) {
+                log.error("AI returned no candidates for image: {}", image.getOriginalFilename());
+                return ResponseEntity.status(502).body(Map.of("error", "AI returned no candidates. The image might be unsafe or unclear."));
+            }
+
+            JsonNode textNode = candidates.path(0)
+                    .path("content")
+                    .path("parts")
+                    .path(0)
+                    .path("text");
+
+            if (textNode.isMissingNode()) {
+                log.error("Invalid AI response structure");
+                return ResponseEntity.internalServerError().body(Map.of("error", "Invalid AI response structure"));
+            }
+
+            // 3. Clean Gemini noise (Markdown stripping)
+            String cleanJson = textNode.asText()
+                    .replaceAll("```json", "")
+                    .replaceAll("```", "")
+                    .trim();
+
+            // 4. Deserialize
+            ProductAnalysisResponse response = objectMapper.readValue(cleanJson, ProductAnalysisResponse.class);
+
+            log.info("Product analysis completed successfully for: {}", response.getProductData().getTitle());
+            return ResponseEntity.ok(response);
 
         } catch (Exception e) {
-            // LOG: Error with stack trace
-            logger.error("Error occurred while analyzing product image: {}", file.getOriginalFilename(), e);
-            return ResponseEntity.internalServerError().body(Map.of("error", "Failed to analyze product: " + e.getMessage()));
+            log.error("Product analysis failed with exception", e);
+            return ResponseEntity.internalServerError()
+                    .body(Map.of(
+                            "error", "Product analysis failed",
+                            "details", e.getMessage()
+                    ));
         }
     }
 }

@@ -4,13 +4,15 @@ import com.ubaid.Auth.handler.LoginSuccessHandler;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.HttpMethod; // Import HttpMethod
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus; // <--- REQUIRED IMPORT
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.HttpStatusEntryPoint; // <--- REQUIRED IMPORT
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
@@ -41,7 +43,15 @@ public class SecurityConfig {
                 // 3. Set Session Management to STATELESS
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 
-                // 4. Define Endpoint Authorization
+                // -------------------------------------------------------------------
+                // 4. FIX: Handle Auth Errors with 401 (Unauthorized) instead of Redirect
+                // This prevents the CORS error when the token expires.
+                // -------------------------------------------------------------------
+                .exceptionHandling(e -> e
+                        .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED))
+                )
+
+                // 5. Define Endpoint Authorization
                 .authorizeHttpRequests(auth -> auth
                         // --- PUBLIC ENDPOINTS ---
                         .requestMatchers(
@@ -64,7 +74,6 @@ public class SecurityConfig {
                         .requestMatchers("/api/public/**").permitAll()
 
                         // --- PUBLIC REVIEWS (READ-ONLY) ---
-                        // Allow anyone to GET reviews, but POST requires authentication (handled by anyRequest)
                         .requestMatchers(HttpMethod.GET, "/api/reviews/**").permitAll()
 
                         // --- ADMIN ONLY ---
@@ -73,14 +82,14 @@ public class SecurityConfig {
                         // --- SELLER ONLY ---
                         .requestMatchers("/api/seller/**", "/api/analyze-product").hasRole("SELLER")
 
-                        // --- ALL OTHER REQUESTS (Including POST /api/reviews/add) REQUIRE AUTH ---
+                        // --- ALL OTHER REQUESTS REQUIRE AUTH ---
                         .anyRequest().authenticated()
                 )
 
-                // 5. Add JWT Filter
+                // 6. Add JWT Filter
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
 
-                // 6. OAuth2 Login
+                // 7. OAuth2 Login
                 .oauth2Login(oauth -> oauth
                         .successHandler(loginSuccessHandler)
                 );

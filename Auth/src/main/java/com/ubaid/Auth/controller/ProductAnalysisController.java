@@ -110,7 +110,7 @@ public class ProductAnalysisController {
             // 4. Deserialize
             ProductAnalysisResponse response = objectMapper.readValue(cleanJson, ProductAnalysisResponse.class);
 
-            log.info("Product analysis completed successfully for: {}", response.getProductData().getTitle());
+            log.info("Product analysis completed successully for: {}", response.getProductData().getTitle());
             return ResponseEntity.ok(response);
 
         } catch (Exception e) {

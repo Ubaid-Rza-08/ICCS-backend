@@ -14,7 +14,9 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -39,66 +41,78 @@ public class AuthController {
         log.info("Request received to refresh token for UID: {}", uid);
 
         if (uid == null || requestRefreshToken == null) {
-            log.warn("Refresh token request failed: Missing UID or Refresh Token");
             return ResponseEntity.badRequest().body(Map.of("error", "Missing UID or Refresh Token"));
         }
 
         try {
-            // Use CompletableFuture to handle the async Firebase call
-            CompletableFuture<DataSnapshot> future = new CompletableFuture<>();
             DatabaseReference ref = FirebaseDatabase.getInstance().getReference("users").child(uid);
 
+            // 1. Create a Future to wait for the data
+            CompletableFuture<DataSnapshot> future = new CompletableFuture<>();
+
+            // 2. Attach Listener
             ref.addListenerForSingleValueEvent(new ValueEventListener() {
                 @Override
                 public void onDataChange(DataSnapshot dataSnapshot) {
+                    // Success: Pass data to future
                     future.complete(dataSnapshot);
                 }
 
                 @Override
                 public void onCancelled(DatabaseError databaseError) {
+                    // Error: Pass exception to future
                     future.completeExceptionally(databaseError.toException());
                 }
             });
 
-            // Wait for result with a timeout (e.g., 10 seconds) to prevent hanging
+            // 3. Wait for result (10 seconds max)
             DataSnapshot snapshot = future.get(10, TimeUnit.SECONDS);
 
             if (!snapshot.exists()) {
-                log.warn("Refresh token failed: User not found in database for UID: {}", uid);
+                log.warn("Refresh token failed: User not found for UID: {}", uid);
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "User not found"));
             }
 
+            // 4. MANUAL MAPPING (No UserEntity needed)
             String storedRefreshToken = snapshot.child("refreshToken").getValue(String.class);
+            String email = snapshot.child("email").getValue(String.class);
+            String name = snapshot.child("name").getValue(String.class);
+            String role = snapshot.child("role").getValue(String.class);
 
-            // Validate Refresh Token
+            // Check 'profilePhotoUrl' first, then 'picture'
+            String photoUrl = snapshot.child("profilePhotoUrl").getValue(String.class);
+            if (photoUrl == null) {
+                photoUrl = snapshot.child("picture").getValue(String.class);
+            }
+
+            // Validate
             if (storedRefreshToken != null && storedRefreshToken.equals(requestRefreshToken)) {
-                log.debug("Refresh token validated successfully for UID: {}", uid);
 
-                // Extract user details safely
-                String email = snapshot.child("email").getValue(String.class);
-                String role = snapshot.child("role").getValue(String.class);
-                String name = snapshot.child("name").getValue(String.class);
-                String photoUrl = snapshot.child("profilePhotoUrl").getValue(String.class);
-
-                // Set defaults if null
+                // Defaults
                 role = (role != null) ? role : "CUSTOMER";
                 name = (name != null) ? name : "User";
                 photoUrl = (photoUrl != null) ? photoUrl : "";
 
-                // Generate New Access Token
+                // Generate Token
                 String newAccessToken = jwtService.generateAccessToken(uid, email, role, name, photoUrl);
 
-                log.info("New access token generated for UID: {}", uid);
+                log.info("Token refreshed successfully for UID: {}", uid);
                 return ResponseEntity.ok(Map.of("accessToken", newAccessToken));
+
             } else {
-                log.warn("Refresh token mismatch for UID: {}", uid);
+                log.warn("Invalid refresh token for UID: {}", uid);
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "Invalid Refresh Token"));
             }
 
+        } catch (TimeoutException e) {
+            log.error("Firebase connection timed out for UID: {}. CHECK YOUR DATABASE URL.", uid);
+            return ResponseEntity.status(HttpStatus.REQUEST_TIMEOUT).body(Map.of("error", "Database timeout. Check server configuration."));
+        } catch (InterruptedException | ExecutionException e) {
+            log.error("Error executing Firebase request for UID: {}", uid, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", "Internal Server Error"));
         } catch (Exception e) {
-            log.error("Error verifying refresh token for UID: {}", uid, e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Error verifying token: " + e.getMessage()));
+            log.error("Unexpected error for UID: {}", uid, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", "Unexpected error"));
         }
     }
 }

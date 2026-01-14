@@ -227,6 +227,7 @@ public class PublicProductController {
                 .category(product.getCategory())
                 .subCategory(product.getSubCategory())
                 .keywords(product.getKeywords())
+                .pCreditScore(product.getpCreditScore()) // Added for sorting
                 .build();
     }
 }

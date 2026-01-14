@@ -20,12 +20,15 @@ public class PublicProductResponseDto {
     private String pBrandName;
     private List<String> pImages;
 
-    // Pricing (Added based on your request)
-    private double pSellingPrice; // Corresponds to sellerPrice
-    private double pMrp;          // Corresponds to Mrp
+    // Pricing
+    private double pSellingPrice;
+    private double pMrp;
 
     // Categorization & SEO
     private String category;
     private String subCategory;
     private List<String> keywords;
+
+    // Sorting & Ranking (Added)
+    private double pCreditScore;
 }
